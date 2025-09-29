@@ -1,0 +1,150 @@
+{
+  "results": {
+    "0": {
+      "problem_idx": 0,
+      "task_name": "Longest Substring Without Repeating Characters",
+      "task_id": "3ec1ab6e-7cbc-4c0e-8291-0f273154b084",
+      "request_timestamp": "2025-09-29T22:48:49.851234",
+      "result": {
+        "request_id": "5075981c-3cc6-4194-a628-90b851a0691f",
+        "candidate_id": "effibench_0",
+        "problem_name": "Longest Substring Without Repeating Characters",
+        "status": "completed",
+        "validation": {
+          "is_correct": true,
+          "passed_tests": 5,
+          "total_tests": 5,
+          "pass_rate": 100.0,
+          "error_summary": null
+        },
+        "energy_metrics": {
+          "median_package_energy_joules": 1.3,
+          "median_ram_energy_joules": 0.17,
+          "median_total_energy_joules": 1.47,
+          "median_execution_time_seconds": 1.6313002561219037e-05,
+          "energy_per_test_case_joules": 0.294,
+          "power_consumption_watts": 90112.16632152296,
+          "energy_efficiency_score": 0.294
+        },
+        "measurement_environment": {
+          "meter_type": "unknown",
+          "cpu_model": null,
+          "measurement_core": null,
+          "thermal_controlled": true,
+          "timestamp": 1759186125.2575772
+        },
+        "processing_time_seconds": 0.42490363121032715,
+        "measurement_timestamp": 1759186125.2575772
+      }
+    },
+    "1": {
+      "problem_idx": 1,
+      "task_name": "Median of Two Sorted Arrays",
+      "task_id": "069a0a60-c2df-4b99-a2f9-5ae4d55dc8bc",
+      "request_timestamp": "2025-09-29T22:48:56.914788",
+      "result": {
+        "task_id": "069a0a60-c2df-4b99-a2f9-5ae4d55dc8bc",
+        "request_id": "20fbdd08-fa97-4386-8220-780671322c9c",
+        "status": "failed",
+        "error_type": "incorrect_solution",
+        "error_message": "Energy measurement failed",
+        "failure_timestamp": 1759186131.8899114
+      }
+    },
+    "2": {
+      "problem_idx": 2,
+      "task_name": "Regular Expression Matching",
+      "task_id": "946ee5aa-24b1-492e-8301-37299cf3874a",
+      "request_timestamp": "2025-09-29T22:49:03.955911",
+      "result": {
+        "request_id": "8f2f2578-3a90-4fcc-82ab-4968087a8d9a",
+        "candidate_id": "effibench_2",
+        "problem_name": "Regular Expression Matching",
+        "status": "completed",
+        "validation": {
+          "is_correct": true,
+          "passed_tests": 5,
+          "total_tests": 5,
+          "pass_rate": 100.0,
+          "error_summary": null
+        },
+        "energy_metrics": {
+          "median_package_energy_joules": 1.21,
+          "median_ram_energy_joules": 0.1,
+          "median_total_energy_joules": 1.31,
+          "median_execution_time_seconds": 8.054099453147501e-05,
+          "energy_per_test_case_joules": 0.262,
+          "power_consumption_watts": 16265.008988535134,
+          "energy_efficiency_score": 0.262
+        },
+        "measurement_environment": {
+          "meter_type": "unknown",
+          "cpu_model": null,
+          "measurement_core": null,
+          "thermal_controlled": true,
+          "timestamp": 1759186139.3435616
+        },
+        "processing_time_seconds": 0.40598607063293457,
+        "measurement_timestamp": 1759186139.3435616
+      }
+    },
+    "3": {
+      "problem_idx": 3,
+      "task_name": "Container With Most Water",
+      "task_id": "7cd6ce08-e24f-4d10-a492-22cc6cd6c35b",
+      "request_timestamp": "2025-09-29T22:49:10.999862",
+      "result": {
+        "task_id": "7cd6ce08-e24f-4d10-a492-22cc6cd6c35b",
+        "request_id": "5178d3da-e227-46d9-8fd2-7fdabeeffc49",
+        "status": "failed",
+        "error_type": "incorrect_solution",
+        "error_message": "Energy measurement failed",
+        "failure_timestamp": 1759186145.9939437
+      }
+    },
+    "4": {
+      "problem_idx": 4,
+      "task_name": "Generate Parentheses",
+      "task_id": "1401aabc-f3bc-4f31-a432-78fb5cfb64f9",
+      "request_timestamp": "2025-09-29T22:49:18.085372",
+      "result": {
+        "request_id": "694fbae4-92b7-4bdb-aefc-04b992abe4c3",
+        "candidate_id": "effibench_4",
+        "problem_name": "Generate Parentheses",
+        "status": "completed",
+        "validation": {
+          "is_correct": true,
+          "passed_tests": 5,
+          "total_tests": 5,
+          "pass_rate": 100.0,
+          "error_summary": null
+        },
+        "energy_metrics": {
+          "median_package_energy_joules": 1.06,
+          "median_ram_energy_joules": 0.08,
+          "median_total_energy_joules": 1.1400000000000001,
+          "median_execution_time_seconds": 0.0001487740082666278,
+          "energy_per_test_case_joules": 0.22800000000000004,
+          "power_consumption_watts": 7662.628797074085,
+          "energy_efficiency_score": 0.22800000000000004
+        },
+        "measurement_environment": {
+          "meter_type": "unknown",
+          "cpu_model": null,
+          "measurement_core": null,
+          "thermal_controlled": true,
+          "timestamp": 1759186153.4746163
+        },
+        "processing_time_seconds": 0.40821218490600586,
+        "measurement_timestamp": 1759186153.4746163
+      }
+    }
+  },
+  "failed_problems": {},
+  "metadata": {
+    "total_problems_processed": 5,
+    "successful_problems": 5,
+    "failed_problems": 0,
+    "last_updated": "2025-09-29T22:49:18.085622"
+  }
+}

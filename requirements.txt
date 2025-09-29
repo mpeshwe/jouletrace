@@ -1,0 +1,87 @@
+# jouletrace/requirements.txt
+# Python 3.11+ required
+# Install: pip install -r requirements.txt
+
+# Core Web Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+
+# Data Validation
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# Async Task Queue
+celery==5.3.6
+redis==5.0.1
+flower==2.0.1
+
+# System Monitoring
+psutil==5.9.8
+
+# HTTP Client
+httpx==0.26.0
+requests==2.31.0
+
+# System Requirements (install via package manager):
+# - linux-tools-generic (Ubuntu/Debian)
+# - perf command must be available
+# - Redis server (can be Docker or system service).0  # Type checking
+
+# ============================================================================
+# Security and Authentication (Optional - for future implementation)
+# ============================================================================
+# python-jose[cryptography]==3.3.0  # JWT tokens
+# passlib[bcrypt]==1.7.4  # Password hashing
+# python-multipart==0.0.6  # Form data parsing
+
+# ============================================================================
+# System Requirements (must be installed via package manager, not pip)
+# ============================================================================
+# Linux x86_64 system
+# linux-tools-generic (Debian/Ubuntu) or linux-tools (RHEL/CentOS)
+# perf command available in PATH
+# Redis server (can be Docker container or system service)
+
+# ============================================================================
+# Installation Instructions
+# ============================================================================
+# 
+# 1. Create virtual environment:
+#    python3.11 -m venv venv
+#    source venv/bin/activate  # On Linux/Mac
+#    # or
+#    .\venv\Scripts\activate  # On Windows
+#
+# 2. Install dependencies:
+#    pip install --upgrade pip
+#    pip install -r requirements.txt
+#
+# 3. Install system dependencies (Ubuntu/Debian):
+#    sudo apt-get update
+#    sudo apt-get install -y linux-tools-generic linux-tools-$(uname -r)
+#
+# 4. Install Redis (if not using Docker):
+#    sudo apt-get install redis-server
+#
+# 5. Configure perf permissions:
+#    sudo sysctl kernel.perf_event_paranoid=0
+#    # Or add user to perf_users group
+#
+# 6. Verify installation:
+#    python -c "from jouletrace.energy import create_energy_meter; print(create_energy_meter())"
+#
+# ============================================================================
+# Docker Installation (Recommended for Production)
+# ============================================================================
+# Use the provided Dockerfile which includes all system dependencies
+# docker-compose up -d --build
+#
+# ============================================================================
+# Notes
+# ============================================================================
+# - Pinned versions for reproducibility
+# - Standard library modules (pathlib, logging, etc.) don't need installation
+# - Energy measurement requires Linux with RAPL support
+# - Redis must be running before starting Celery workers
+# - For production, consider using a requirements.lock file
