@@ -141,7 +141,8 @@ class SocketMeasurementTask(Task):
                 max_trials=20,
                 target_cv_percent=5.0,
                 early_stop_enabled=True,
-                cooldown_seconds=0.5
+                cooldown_seconds=0.5,
+                min_trial_wall_time_seconds=0.2  # enforce >=200ms per trial
             )
             self._aggregator.setup(self.executor)
             logger.info("StatisticalAggregator initialized")
@@ -434,9 +435,8 @@ def _build_success_response(request_id: str,
 
     # Map Socket 0 aggregated metrics to the API schema fields
     energy_metrics = {
-        # Treat net socket energy as both total and package energy; DRAM not separated
-        "median_package_energy_joules": measurement_result.median_energy_joules,
-        "median_ram_energy_joules": 0.0,
+        "median_package_energy_joules": getattr(measurement_result, "median_pkg_energy_joules", measurement_result.median_energy_joules),
+        "median_ram_energy_joules": getattr(measurement_result, "median_dram_energy_joules", 0.0),
         "median_total_energy_joules": measurement_result.median_energy_joules,
         "median_execution_time_seconds": measurement_result.median_time_seconds,
         "energy_per_test_case_joules": energy_per_test_case,

@@ -30,6 +30,9 @@ class ExecutionResult:
     timestamp: str
     success: bool
     error_message: Optional[str] = None
+    # Optional breakdowns
+    package_net_energy_joules: float = 0.0
+    dram_energy_joules: float = 0.0
 
 
 class CalibrationProfile:
@@ -156,7 +159,8 @@ class SocketExecutor:
     def _create_execution_script(self,
                                  code: str,
                                  function_name: str,
-                                 test_inputs: List[Any]) -> str:
+                                 test_inputs: List[Any],
+                                 min_wall_time_seconds: float) -> str:
         """
         Create Python script for isolated execution.
         
@@ -174,6 +178,7 @@ from typing import List, Dict, Any, Tuple, Optional, Set, Union
 # Test configuration
 function_name = "{function_name}"
 test_inputs = {test_inputs!r}
+min_wall_time_seconds = {min_wall_time_seconds}
 
 # Verify function exists
 if function_name not in globals():
@@ -185,16 +190,20 @@ target_function = globals()[function_name]
 # Execute on all test inputs
 start_time = time.perf_counter()
 
+loops = 0
 try:
-    for test_input in test_inputs:
-        # Handle different input formats
-        if isinstance(test_input, dict):
-            result = target_function(**test_input)
-        elif isinstance(test_input, (list, tuple)):
-            result = target_function(*test_input)
-        else:
-            result = target_function(test_input)
-            
+    while True:
+        for test_input in test_inputs:
+            # Handle different input formats
+            if isinstance(test_input, dict):
+                result = target_function(**test_input)
+            elif isinstance(test_input, (list, tuple)):
+                result = target_function(*test_input)
+            else:
+                result = target_function(test_input)
+        loops += 1
+        if time.perf_counter() - start_time >= min_wall_time_seconds:
+            break
 except Exception as e:
     print(f"ERROR: {{type(e).__name__}}: {{e}}", file=sys.stderr)
     import traceback
@@ -212,7 +221,8 @@ print(f"SUCCESS", file=sys.stderr)
         return script_template.format(
             user_code=code,
             function_name=function_name,
-            test_inputs=test_inputs
+            test_inputs=test_inputs,
+            min_wall_time_seconds=min_wall_time_seconds
         )
     
     def _verify_socket_idle(self) -> tuple[bool, str]:
@@ -240,7 +250,8 @@ print(f"SUCCESS", file=sys.stderr)
                             function_name: str,
                             test_inputs: List[Any],
                             trial_number: int = 0,
-                            verify_idle: bool = False) -> ExecutionResult:
+                            verify_idle: bool = False,
+                            min_wall_time_seconds: float = 0.1) -> ExecutionResult:
         """
         Execute single measurement trial.
         
@@ -274,7 +285,9 @@ print(f"SUCCESS", file=sys.stderr)
                 )
         
         # Create execution script
-        script_content = self._create_execution_script(code, function_name, test_inputs)
+        script_content = self._create_execution_script(
+            code, function_name, test_inputs, min_wall_time_seconds
+        )
         
         # Write to temporary file
         with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
@@ -287,10 +300,10 @@ print(f"SUCCESS", file=sys.stderr)
                 del self.meter._last_reading_cache[self.socket_id]
             
             # Small delay to ensure counter stability
-            time.sleep(0.02)
+            time.sleep(0.002)
             
-            # Read energy BEFORE execution
-            energy_before = self.meter.get_socket_energy(self.socket_id)
+            # Read energy BEFORE execution (package + DRAM)
+            reading_before = self.meter.get_socket_reading(self.socket_id)
             time_before = time.perf_counter()
             
             # Execute code with CPU pinning (taskset)
@@ -312,14 +325,14 @@ print(f"SUCCESS", file=sys.stderr)
             wall_time = time_after - time_before
             
             # Small delay before reading energy
-            time.sleep(0.02)
+            time.sleep(0.002)
             
             # Clear cache again
             if self.socket_id in self.meter._last_reading_cache:
                 del self.meter._last_reading_cache[self.socket_id]
             
-            # Read energy AFTER execution
-            energy_after = self.meter.get_socket_energy(self.socket_id)
+            # Read energy AFTER execution (package + DRAM)
+            reading_after = self.meter.get_socket_reading(self.socket_id)
             
             # Check for execution errors
             if result.returncode != 0:
@@ -336,37 +349,37 @@ print(f"SUCCESS", file=sys.stderr)
                     error_message=f"Execution failed: {error_msg}"
                 )
             
-            # Extract execution time from script output
+            # Use wall-clock duration for baseline/power; ignore in-script time
             execution_time = wall_time
-            for line in result.stderr.split('\n'):
-                if line.startswith('EXECUTION_TIME:'):
-                    try:
-                        execution_time = float(line.split(':')[1].strip())
-                    except (ValueError, IndexError):
-                        pass
             
-            # Calculate raw energy delta
-            raw_energy = energy_after - energy_before
+            # Calculate raw energy deltas
+            pkg_raw = reading_after.package_energy_joules - reading_before.package_energy_joules
+            dram_raw = reading_after.dram_energy_joules - reading_before.dram_energy_joules
             
             # Handle counter rollover (RAPL is 32-bit)
-            if raw_energy < 0:
-                raw_energy += (2**32 / 1_000_000.0)
+            if pkg_raw < 0:
+                pkg_raw += (2**32 / 1_000_000.0)
+            if dram_raw < 0:
+                dram_raw += (2**32 / 1_000_000.0)
             
             # Calculate baseline energy
             baseline_energy = self.calibration.get_baseline_energy(execution_time)
             
-            # Calculate net energy
-            net_energy = raw_energy - baseline_energy
+            # Calculate net energies
+            package_net = max(0.0, pkg_raw - baseline_energy)
+            total_net = package_net + max(0.0, dram_raw)
             
             return ExecutionResult(
-                net_energy_joules=net_energy,
-                raw_energy_joules=raw_energy,
+                net_energy_joules=total_net,
+                raw_energy_joules=pkg_raw,
                 baseline_energy_joules=baseline_energy,
                 execution_time_seconds=execution_time,
                 trial_number=trial_number,
                 cpu_core=self.cpu_core,
                 timestamp=datetime.now().isoformat(),
-                success=True
+                success=True,
+                package_net_energy_joules=package_net,
+                dram_energy_joules=dram_raw
             )
             
         except subprocess.TimeoutExpired:

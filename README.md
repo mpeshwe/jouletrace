@@ -15,6 +15,19 @@ JouleTrace measures how much energy a piece of code burns while it runs. The ser
 - Workers serialize access to Socket‑0 via a Redis lock, pin the child process to a specific core, measure energy deltas from RAPL, subtract calibrated idle power, and aggregate trials.
 - Calibration data lives at `config/socket0_calibration.json`.
 
+## Software Component Architecture
+
+Client → API → Redis → Workers → Socket‑0 Executor
+
+![Software Component Architecture](docs/assets/socket0_architecture.png)
+
+Key flow
+- Client: POST `/api/v1/measure-socket0`
+- FastAPI (Socket 1): validate request, enqueue Celery task
+- Redis (Socket 1): broker, result backend, Socket‑0 lock
+- Workers (Socket 1): correctness check, orchestrate trials, aggregate results
+- Socket‑0 Executor (isolated): taskset pinning, RAPL (package + DRAM), baseline subtraction, CV early‑stop
+
 ## Repository Layout
 - `jouletrace/api` – FastAPI app, routes, schemas, Celery tasks (Socket‑0 measurement task).
 - `jouletrace/core` – Validation, socket executor, statistical aggregator.

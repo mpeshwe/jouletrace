@@ -281,7 +281,7 @@ class PCMSocketMeter(EnergyMeter):
                 return cached
         
         # Read RAPL directly from sysfs (faster than running pcm)
-        # PCM actually reads from /sys/class/powercap/intel-rapl/intel-rapl:N/energy_uj
+        # Path: /sys/class/powercap/intel-rapl/intel-rapl:N
         rapl_base = Path("/sys/class/powercap/intel-rapl")
         rapl_socket = rapl_base / f"intel-rapl:{socket_id}"
         
@@ -297,13 +297,25 @@ class PCMSocketMeter(EnergyMeter):
             energy_uj = int(energy_file.read_text().strip())
             package_joules = energy_uj / 1_000_000.0
             
-            # Read DRAM energy if available
-            dram_energy_file = rapl_socket / "intel-rapl:0:0" / "energy_uj"
-            if dram_energy_file.exists():
-                dram_uj = int(dram_energy_file.read_text().strip())
-                dram_joules = dram_uj / 1_000_000.0
-            else:
-                dram_joules = 0.0
+            # Read DRAM energy if available (subdomain whose name == 'dram')
+            dram_joules = 0.0
+            try:
+                for child in rapl_socket.iterdir():
+                    if not child.is_dir():
+                        continue
+                    # Only consider child directories with intel-rapl:N:M pattern
+                    if not child.name.startswith(f"intel-rapl:{socket_id}:"):
+                        continue
+                    name_file = child / "name"
+                    energy_file = child / "energy_uj"
+                    if name_file.exists() and energy_file.exists():
+                        domain_name = name_file.read_text().strip().lower()
+                        if "dram" in domain_name:
+                            dram_uj = int(energy_file.read_text().strip())
+                            dram_joules = dram_uj / 1_000_000.0
+                            break
+            except (OSError, ValueError):
+                pass
             
             reading = PCMReading(
                 socket_id=socket_id,
@@ -336,6 +348,10 @@ class PCMSocketMeter(EnergyMeter):
         """
         reading = self._read_socket_energy(socket_id)
         return reading.package_energy_joules
+
+    def get_socket_reading(self, socket_id: int) -> PCMReading:
+        """Get package and DRAM cumulative energies for a socket."""
+        return self._read_socket_energy(socket_id)
     
     def get_cpu_socket(self, cpu_id: int) -> int:
         """

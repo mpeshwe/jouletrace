@@ -1,204 +1,82 @@
-# JouleTrace Energy Measurement Service
+# JouleTrace Usage (Socket‑0, PCM‑Backed)
 
-JouleTrace is a production‑ready service for measuring energy usage of code under test using Linux `perf` + RAPL. It exposes a FastAPI HTTP API, executes correctness validation, and offloads energy measurements to Celery workers pinned to dedicated CPU cores for fair, isolated measurements.
+JouleTrace measures code energy on an isolated CPU socket using per‑socket RAPL sysfs counters. This guide shows how to run the service, submit measurements, and interpret results.
 
-## What You Get
-- Correctness gate before measurement (ensures apples‑to‑apples energy).
-- CPU isolation per worker (one worker per core recommended).
-- Hardware energy via RAPL through `perf stat` (package/DRAM).
-- Asynchronous job queue (Redis + Celery) with scalable throughput.
-- Health checks, basic metrics, and Flower dashboard.
+## Software Component Architecture
 
----
+Client → API → Redis → Workers → Socket‑0 Executor
 
-## Architecture Overview
-- API (`greenCode/jouletrace/api`): FastAPI app handling requests, health, and status.
-- Workers (`worker-*` in docker‑compose): Celery workers running validation and energy measurement. One per physical core, `concurrency=1`.
-- Redis: Broker + result backend.
-- Energy meter (`greenCode/jouletrace/energy`): `PerfEnergyMeter` backend (RAPL events via `perf`).
+![Software Component Architecture](assets/socket0_architecture.png)
 
-Key paths:
-- API service entry: `greenCode/jouletrace/api/service.py`
-- Routes: `greenCode/jouletrace/api/routes.py`
-- Celery tasks: `greenCode/jouletrace/api/tasks.py`
-- Core pipeline: `greenCode/jouletrace/core/pipeline.py`
-- Safe executor: `greenCode/jouletrace/core/executor.py`
-- Perf meter: `greenCode/jouletrace/energy/perf_meter.py`
-- Compose: `greenCode/docker/docker-compose.yml`
-- Image build: `greenCode/docker/Dockerfile`
-
----
+## Prerequisites
+- Linux x86_64 host with RAPL support: `/sys/class/powercap/intel-rapl` exists.
+- Docker + Docker Compose v2.
+- Socket‑0 calibration file at `config/socket0_calibration.json` (fresh ≤7 days).
+- Containers can read `/sys` (mounted read‑only) and workers run privileged/root.
 
 ## Quick Start (Docker Compose)
-Prereqs: Linux x86_64 host with RAPL support, Docker, Docker Compose v2 (`docker compose`).
+1) Build and start
+- `docker compose -f docker/docker-compose.yml up -d --build`
 
-1) Build + start
-- `docker compose -f greenCode/docker/docker-compose.yml up -d --build`
+2) Verify
+- `curl http://127.0.0.1:8000/ping`
+- `curl -s http://127.0.0.1:8000/api/v1/socket0/status | jq`
+- Flower: `http://127.0.0.1:5555`
 
-2) Verify health
-- API ping: `curl http://127.0.0.1:8000/ping`
-- Service health: `curl http://127.0.0.1:8000/api/v1/health`
-- Flower: http://127.0.0.1:5555
-- Compose ps: `docker compose -f greenCode/docker/docker-compose.yml ps`
-
-3) Submit a measurement
+3) Submit + poll
 ```
-curl -s http://127.0.0.1:8000/api/v1/measure \
+RESP=$(curl -sS -X POST http://127.0.0.1:8000/api/v1/measure-socket0 \
   -H 'Content-Type: application/json' \
-  -d '{
-        "candidate_code": "def solve(x):\n    return x * x\n",
-        "function_name": "solve",
-        "test_cases": [
-          {"test_id": "case-1", "inputs": [2], "expected_output": 4},
-          {"test_id": "case-2", "inputs": [7], "expected_output": 49}
-        ],
-        "timeout_seconds": 10,
-        "energy_measurement_trials": 3,
-        "warmup_trials": 1
-      }'
-```
-Then poll the returned `task_id`:
-```
-curl -s http://127.0.0.1:8000/api/v1/tasks/<TASK_ID>
+  --data-binary @- <<'JSON'
+{"candidate_code":"def solve(x):\n  return x * x\n","function_name":"solve","test_cases":[{"test_id":"t1","inputs":[2],"expected_output":4},{"test_id":"t2","inputs":[7],"expected_output":49}],"energy_measurement_trials":3,"timeout_seconds":20}
+JSON
+)
+echo "$RESP" | jq .
+TASK_ID=$(echo "$RESP" | jq -er .task_id)
+curl -sS "http://127.0.0.1:8000/api/v1/tasks/$TASK_ID" | jq .
 ```
 
----
+## Endpoints
+- `POST /api/v1/measure-socket0` – queue a Socket‑0 measurement (primary)
+- `GET /api/v1/tasks/{task_id}` – poll status (`queued|running|completed|failed`)
+- `POST /api/v1/validate` – quick correctness check (no energy)
+- `GET /api/v1/socket0/status` – calibration/isolation/Redis readiness
+- `GET /api/v1/health` – system health
 
-## Configuration and Environment
-All services are configured in `greenCode/docker/docker-compose.yml`. Important knobs:
+## Response (example)
+```
+{
+  "status": "completed",
+  "validation": {"is_correct": true, "passed_tests": 2, "total_tests": 2},
+  "energy_metrics": {
+    "median_package_energy_joules": 1.40,
+    "median_ram_energy_joules": 1.50,
+    "median_total_energy_joules": 2.90,
+    "median_execution_time_seconds": 0.2066,
+    "energy_per_test_case_joules": 1.45,
+    "power_consumption_watts": 14.06
+  }
+}
+```
 
-- Energy and validation (service‑wide defaults)
-  - `ENERGY_DEFAULT_TIMEOUT` (seconds per test‑case validation)
-  - `ENERGY_DEFAULT_MEMORY_LIMIT` (MB per test‑case validation)
-  - `ENERGY_PERF_TIMEOUT` (seconds per perf measurement trial)
-  - `ENERGY_USE_SUDO` (true|false) — run `perf` via `sudo` inside the container
-  - `ENERGY_MEASUREMENT_CORE` (int) — core id for worker pinning
-  - `ENERGY_ISOLATE_PROCESSES` (true|false)
+## How measurement works
+- Correctness first: code must pass all test cases.
+- Socket‑0 lock: only one measurement at a time.
+- Pinning: child process is pinned to a dedicated core via `taskset`.
+- Trial timing: the executor repeats the test inputs inside the child until the trial wall time ≥ a minimum (default 0.2 s) to stabilize RAPL deltas.
+- RAPL deltas: read package + DRAM counters before/after; subtract calibrated idle baseline from package; sum package_net + dram_raw for total.
+- Statistics: run multiple trials, compute medians, and early‑stop when CV < target.
 
-- Celery
-  - `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND` (point to Redis service)
-  - `CELERY_WORKER_CONCURRENCY=1` (keep 1 per worker for isolation)
-  - `CELERY_TASK_SOFT_TIME_LIMIT`, `CELERY_TASK_TIME_LIMIT` (overall job budget)
+## Best practices
+- Target ≥100–200 ms per trial; tiny functions otherwise yield noisy power.
+- Prefer quiet hosts and keep Socket‑0 isolated; pin workers away from Socket‑0 cores except the measurement core used by the child.
+- Keep calibration fresh; recalibrate if ambient/thermal conditions change.
 
-- API
-  - `API_WORKERS` (parallel HTTP workers)
+## Troubleshooting
+- `503 Socket 0 not calibrated`: run calibration and place file under `config/`.
+- DRAM energy = 0: your CPU may not expose a DRAM RAPL domain; package/total still valid.
+- `All trials failed`: container `cpuset` must include the measurement core; ensure `util-linux` (taskset) is present.
+- Permission errors reading RAPL: ensure `/sys` is mounted and containers are privileged/root.
 
-- Logging
-  - `LOG_LEVEL`, `LOG_TO_FILE`, `LOG_JSON_LOGGING`
-
-- Permissions/host settings (host‑side)
-  - `sudo sysctl -w kernel.perf_event_paranoid=0` (or `-1` where allowed)
-  - Alternatively, run `perf` with sudo (containers set NOPASSWD for `/usr/bin/perf`).
-
-Note: On Debian base images, install `linux-perf` (not Ubuntu’s `linux-tools-generic`). The Dockerfile already does this.
-
----
-
-## Using the API
-- `POST /api/v1/measure` (queue a measurement)
-  - Body: `{ candidate_code, function_name, test_cases[], timeout_seconds?, memory_limit_mb?, energy_measurement_trials?, warmup_trials? }`
-  - Returns: `{ task_id, request_id, status: "queued", estimated_completion_seconds, poll_url }`
-- `GET /api/v1/tasks/{task_id}` (poll status)
-  - Returns one of:
-    - `queued`: task id + poll URL
-    - `running`: progress info
-    - `completed`: validation + energy metrics
-    - `failed`: error_type + error_message
-- `GET /api/v1/health` — overall health + counts
-- `GET /ping` — basic liveness
-
-Statuses
-- `queued` → in Redis waiting for a worker
-- `running` → worker started (validation or measurement)
-- `completed` → success, includes `energy_metrics`
-- `failed` → validation or measurement failed (see `error_type`/`error_message`)
-
----
-
-## Fairness and Scaling
-- Use exactly one Celery worker per physical CPU core with `concurrency=1`.
-- Pin each worker to a distinct core (`cpuset`) for stable energy numbers.
-- For heavy workloads, set `energy_measurement_trials=1` and `warmup_trials=0`, then scale out workers to increase throughput.
-
----
-
-## Troubleshooting (Critical Issues We Fixed)
-- Docker build failed on `linux-tools-generic` (Debian base)
-  - Fix: use `linux-perf` package in Dockerfile.
-
-- API healthcheck 204 with body → FastAPI assertion failure
-  - Fix: set `response_class=Response` for `204` route and return an empty body.
-
-- Dataclass error: `non-default argument 'validation' follows default argument`
-  - Fix: reorder fields in `JouleTraceMeasurementResult` so required fields come first.
-
-- Celery used `redis://localhost` inside containers → connection failure
-  - Fix: read broker/backend from config/env (`redis` hostname from compose).
-
-- Status mapping bug
-  - Worker returned `{status: "failed"}` payload but routes always coerced to success schema.
-  - Fix: if payload contains `status: failed`, map to `TaskFailedResponse`.
-
-- Missing imports for schemas caused 500s while polling
-  - Fix: import `TaskRunningResponse`/`TaskFailedResponse` in routes.
-
-- Perf not available / permission errors
-  - Host: set `kernel.perf_event_paranoid=0` (or `-1` if permitted).
-  - Containers: run workers privileged and/or `ENERGY_USE_SUDO=true` (NOPASSWD for `/usr/bin/perf`).
-  - Debian: ensure `linux-perf` installed. Optionally `setcap cap_perfmon+ep $(command -v perf)` on host.
-
-- Perf meter setup/permission checks failed early
-  - Fix: avoid using internal `_build_perf_command` during permissions probe; call `perf stat sleep 0.1` directly (with sudo when configured).
-
-- Inline measurement script `.format` collisions (KeyError: 'e')
-  - Fix: convert to triple‑quoted template and escape braces in f‑strings (`{{ }}`), so only `user_code`/`test_inputs`/`function_name` are formatted.
-
-- Argument unpacking mismatch between validator and perf runner
-  - Fix: always unpack list/tuple inputs as positional args in the perf runner (even length 1), matching validator behavior.
-
-- Workers dying with `SIGXCPU` (CPU rlimit)
-  - Fix: stop using `RLIMIT_CPU` (kills Celery process). Enforce wall‑clock timeouts via `SIGALRM` and memory via `RLIMIT_AS` with clamped soft limits.
-
-- Compose v1 `ContainerConfig` KeyError / BuildKit metadata mismatch
-  - Workarounds: use `docker compose` v2; or disable BuildKit for v1. We also removed `version:` key to silence warnings in v2.
-
-- `jq` pipeline error in shell examples
-  - Ensure the `| jq` is on the same line as the `curl` command or use parentheses.
-
----
-
-## Do’s and Don’ts
-**Do**
-- Run one worker per physical core; pin with `cpuset`.
-- Set `ENERGY_USE_SUDO=true` (workers) and run privileged so `perf` can read RAPL.
-- Increase `ENERGY_DEFAULT_TIMEOUT`/`ENERGY_DEFAULT_MEMORY_LIMIT` for heavy but correct solutions.
-- Use `energy_measurement_trials=1`, `warmup_trials=0` for heavy jobs; increase later for stability.
-- Keep Redis healthy; purge stale tasks before benchmarks.
-- Use Flower to monitor queue depth and worker health.
-
-**Don’t**
-- Don’t set CPU rlimits (`RLIMIT_CPU`) — they kill the worker via SIGXCPU; rely on wall‑clock timeouts.
-- Don’t exceed physical core count with workers (avoid SMT for fair energy numbers).
-- Don’t use Ubuntu’s `linux-tools-generic` package on Debian slim — use `linux-perf`.
-- Don’t ignore host perf permissions; set `perf_event_paranoid` or rely on sudo perf.
-
----
-
-## Performance Tuning Checklist
-- Scale workers up to the number of physical cores.
-- Raise API workers (`API_WORKERS`) if request throughput is the bottleneck.
-- Increase `ENERGY_PERF_TIMEOUT` for longer trials.
-- Adjust Celery `*_TIME_LIMIT` for end‑to‑end job budgets.
-- Use median metrics and adequate trials for stability on small workloads.
-
----
-
-## Security Notes
-- Passwordless sudo is limited to `/usr/bin/perf` inside containers.
-- Prefer dedicated hosts for accurate energy work; avoid noisy neighbors.
-- Consider cgroup limits and monitoring in production; aggregate logs centrally.
-
----
-
-## Examples
-- See `greenCode/try.ipynb` for batch, A/B comparisons (brute vs optimal), and stress tests (1k+ jobs).
+## Notes
+- DRAM net: we report DRAM raw delta today. If you need net DRAM energy, extend calibration to include a DRAM idle baseline and subtract it similarly to package.

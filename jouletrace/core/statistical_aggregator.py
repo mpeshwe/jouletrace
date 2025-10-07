@@ -22,6 +22,9 @@ class AggregatedResult:
     mean_energy_joules: float
     stddev_energy_joules: float
     cv_percent: float
+    # Package and DRAM breakdown
+    median_pkg_energy_joules: float
+    median_dram_energy_joules: float
     
     # Timing statistics
     median_time_seconds: float
@@ -62,7 +65,8 @@ class StatisticalAggregator:
                  max_trials: int = 20,
                  target_cv_percent: float = 5.0,
                  early_stop_enabled: bool = True,
-                 cooldown_seconds: float = 0.5):
+                 cooldown_seconds: float = 0.5,
+                 min_trial_wall_time_seconds: float = 0.1):
         """
         Args:
             min_trials: Minimum trials before considering early stop
@@ -76,6 +80,7 @@ class StatisticalAggregator:
         self.target_cv_percent = target_cv_percent
         self.early_stop_enabled = early_stop_enabled
         self.cooldown_seconds = cooldown_seconds
+        self.min_trial_wall_time_seconds = min_trial_wall_time_seconds
         
         self.executor: Optional[SocketExecutor] = None
     
@@ -178,7 +183,8 @@ class StatisticalAggregator:
                 function_name=function_name,
                 test_inputs=test_inputs,
                 trial_number=trial,
-                verify_idle=True
+                verify_idle=True,
+                min_wall_time_seconds=self.min_trial_wall_time_seconds
             )
             
             if result.success:
@@ -216,10 +222,14 @@ class StatisticalAggregator:
         
         # Extract data
         energies = [r.net_energy_joules for r in successful_results]
+        pkg_energies = [r.package_net_energy_joules for r in successful_results]
+        dram_energies = [r.dram_energy_joules for r in successful_results]
         times = [r.execution_time_seconds for r in successful_results]
         
         # Calculate statistics
         median_energy = statistics.median(energies)
+        median_pkg = statistics.median(pkg_energies)
+        median_dram = statistics.median(dram_energies)
         mean_energy = statistics.mean(energies)
         stddev_energy = statistics.stdev(energies) if len(energies) > 1 else 0.0
         cv_percent = self._calculate_cv(energies)
@@ -262,6 +272,8 @@ class StatisticalAggregator:
             mean_energy_joules=mean_energy,
             stddev_energy_joules=stddev_energy,
             cv_percent=cv_percent,
+            median_pkg_energy_joules=median_pkg,
+            median_dram_energy_joules=median_dram,
             median_time_seconds=median_time,
             mean_time_seconds=mean_time,
             median_power_watts=median_power,
