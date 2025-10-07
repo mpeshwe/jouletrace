@@ -1,5 +1,5 @@
 # jouletrace/docker/Dockerfile
-# Multi-stage build for Socket 0 isolation architecture
+# Multi-stage build for optimized production image
 
 # Build stage
 FROM python:3.11-slim as builder
@@ -23,17 +23,13 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Production stage
 FROM python:3.11-slim
 
-# Install runtime dependencies
+# Install runtime dependencies including perf tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Perf tools for legacy energy measurement
+    # Perf tools for energy measurement (Debian package providing `perf`)
     linux-perf \
     # System utilities
     sudo \
     procps \
-    util-linux \
-    curl \
-    # MSR tools for PCM (Socket 0 architecture)
-    msr-tools \
     # Cleanup
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
@@ -41,10 +37,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
 
-# Set up user (root in container for MSR/RAPL access)
-# Note: We run as root in privileged container for hardware access
-# In production, consider more granular capabilities instead
-RUN useradd -m -u 1000 -s /bin/bash jouletrace
+# Set up non-root user for security (but with sudo for perf)
+RUN useradd -m -u 1000 -s /bin/bash jouletrace && \
+    echo "jouletrace ALL=(ALL) NOPASSWD: /usr/bin/perf" >> /etc/sudoers
 
 # Set working directory
 WORKDIR /app
@@ -59,13 +54,10 @@ ENV PATH="/opt/venv/bin:$PATH" \
     JOULETRACE_ENVIRONMENT=production
 
 # Create necessary directories
-RUN mkdir -p /var/log/jouletrace /app/config && \
-    chown -R jouletrace:jouletrace /var/log/jouletrace /app/config
+RUN mkdir -p /var/log/jouletrace && \
+    chown jouletrace:jouletrace /var/log/jouletrace
 
-# Load MSR module (will be handled by privileged mode in docker-compose)
-# Ensure /dev/cpu/*/msr exists for PCM to read RAPL counters
-
-# Switch to jouletrace user for API, but workers run as root for hardware access
+# Switch to non-root user
 USER jouletrace
 
 # Expose API port
@@ -73,7 +65,7 @@ EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:8000/ping || exit 1
+    CMD python -c "import requests; requests.get('http://localhost:8000/ping').raise_for_status()"
 
-# Default command (API server)
-CMD ["python", "-m", "uvicorn", "jouletrace.api.service:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+# Default command (can be overridden)
+CMD ["python", "-m", "uvicorn", "jouletrace.api.service:app", "--host", "0.0.0.0", "--port", "8000"]

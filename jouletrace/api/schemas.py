@@ -2,7 +2,10 @@
 from __future__ import annotations
 from typing import List, Optional, Dict, Any, Union, Literal
 from uuid import UUID
-from pydantic import BaseModel, Field, field_validator
+try:
+    from pydantic import BaseModel, Field, field_validator
+except ImportError:  # pydantic v1
+    from pydantic import BaseModel, Field, validator as field_validator  # type: ignore
 from enum import Enum
 
 from ..core.models import MeasurementStatus, CPUIsolationConfig

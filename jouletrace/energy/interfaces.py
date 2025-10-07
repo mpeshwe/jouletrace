@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 class EnergyMeterType(str, Enum):
     """Types of energy measurement backends."""
+    PCM = "pcm"                      # Intel PCM with per-socket RAPL (preferred)
     PERF = "perf"                    # Linux perf with RAPL events
     TURBOSTAT = "turbostat"          # Intel turbostat utility
     MOCK = "mock"                    # Mock implementation for testing
@@ -208,10 +209,11 @@ class EnergyMeterRegistry:
     def get_best_available_meter(self) -> Optional[EnergyMeter]:
         """
         Get the best available energy meter on this system.
-        
-        Preference order: PERF > TURBOSTAT > RUNTIME_ONLY > MOCK
+
+        Preference order: PCM > PERF > TURBOSTAT > RUNTIME_ONLY > MOCK
         """
         preference_order = [
+            EnergyMeterType.PCM,         # Preferred: per-socket energy attribution
             EnergyMeterType.PERF,
             EnergyMeterType.TURBOSTAT, 
             EnergyMeterType.RUNTIME_ONLY,

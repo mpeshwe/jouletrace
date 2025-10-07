@@ -28,6 +28,12 @@ celery_app = Celery(
     backend=config.celery.result_backend
 )
 
+# Ensure Socket 0 measurement tasks are discoverable by workers
+# This avoids "unregistered task 'socket_measurement_task'" when using the Socket 0 pipeline
+celery_app.conf.update(include=[
+    "jouletrace.api.socket_measurement_task",
+])
+
 # Celery configuration
 celery_app.conf.update(
     task_serializer="json",
@@ -48,8 +54,9 @@ celery_app.conf.update(
     
     # Result backend settings
     result_expires=86400,      # Keep results for 24 hours
+    # Do not force Redis Sentinel in single-node deployments; only set
+    # generic transport options that work with a standalone Redis master.
     result_backend_transport_options={
-        "master_name": "mymaster",
         "visibility_timeout": 3600,
     },
     

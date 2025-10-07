@@ -190,30 +190,19 @@ def startup_dependencies():
     logger.info("Initializing JouleTrace dependencies")
     
     try:
-        # Initialize factory
+        # Initialize factory only; defer energy meter and pipeline creation to requests/workers
         factory = get_energy_meter_factory()
-        logger.info("EnergyMeterFactory initialized")
-        
-        # Attempt to create energy meter
-        energy_meter = get_energy_meter()
-        if energy_meter:
-            logger.info(f"Energy meter available: {energy_meter.meter_type.value}")
-        else:
-            logger.warning("Energy meter not available - service will run in validation-only mode")
-        
-        # Initialize pipeline
-        pipeline = get_pipeline()
-        logger.info("JouleTrace pipeline initialized")
-        
-        # Log system capabilities
+        logger.info("EnergyMeterFactory initialized (deferred meter/pipeline setup)")
+
+        # Log system capabilities without forcing meter setup
         system_info = factory.get_system_energy_info()
         logger.info(f"System energy measurement ready: {system_info['energy_measurement_ready']}")
-        
+
         if not system_info['energy_measurement_ready']:
             logger.warning("Energy measurement not available:")
             for issue in system_info.get('validation_issues', []):
                 logger.warning(f"  - {issue}")
-        
+
     except Exception as e:
         logger.error(f"Failed to initialize dependencies: {e}", exc_info=True)
         # Don't raise exception - allow service to start in degraded mode

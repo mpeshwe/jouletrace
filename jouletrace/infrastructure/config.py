@@ -5,8 +5,18 @@ from typing import Optional, List, Dict, Any
 from pathlib import Path
 from enum import Enum
 
-from pydantic import Field, field_validator, ConfigDict
-from pydantic_settings import BaseSettings
+try:
+    from pydantic import Field, field_validator, ConfigDict
+    PYDANTIC_V2 = True
+except ImportError:  # Fallback for pydantic v1
+    from pydantic import Field, validator as field_validator  # type: ignore
+    ConfigDict = None  # type: ignore
+    PYDANTIC_V2 = False
+
+try:
+    from pydantic_settings import BaseSettings
+except ImportError:  # pydantic v1 ships BaseSettings in pydantic core
+    from pydantic import BaseSettings
 
 class Environment(str, Enum):
     """Deployment environment."""
@@ -26,7 +36,11 @@ class LogLevel(str, Enum):
 class CelerySettings(BaseSettings):
     """Celery task queue configuration."""
     
-    model_config = ConfigDict(env_prefix="CELERY_")
+    if PYDANTIC_V2:
+        model_config = ConfigDict(env_prefix="CELERY_")  # type: ignore[misc]
+    else:
+        class Config:
+            env_prefix = "CELERY_"
     
     broker_url: str = Field(
         default="redis://localhost:6379/0",
@@ -67,7 +81,11 @@ class CelerySettings(BaseSettings):
 class EnergyMeasurementSettings(BaseSettings):
     """Energy measurement configuration."""
     
-    model_config = ConfigDict(env_prefix="ENERGY_")
+    if PYDANTIC_V2:
+        model_config = ConfigDict(env_prefix="ENERGY_")  # type: ignore[misc]
+    else:
+        class Config:
+            env_prefix = "ENERGY_"
     
     # Energy meter configuration
     meter_type: Optional[str] = Field(
@@ -120,7 +138,11 @@ class EnergyMeasurementSettings(BaseSettings):
 class APISettings(BaseSettings):
     """FastAPI configuration."""
     
-    model_config = ConfigDict(env_prefix="API_")
+    if PYDANTIC_V2:
+        model_config = ConfigDict(env_prefix="API_")  # type: ignore[misc]
+    else:
+        class Config:
+            env_prefix = "API_"
     
     host: str = Field(default="0.0.0.0", description="API host address")
     port: int = Field(default=8000, ge=1024, le=65535, description="API port")
@@ -159,7 +181,11 @@ class APISettings(BaseSettings):
 class RedisSettings(BaseSettings):
     """Redis configuration."""
     
-    model_config = ConfigDict(env_prefix="REDIS_")
+    if PYDANTIC_V2:
+        model_config = ConfigDict(env_prefix="REDIS_")  # type: ignore[misc]
+    else:
+        class Config:
+            env_prefix = "REDIS_"
     
     host: str = Field(default="localhost", description="Redis host")
     port: int = Field(default=6379, ge=1024, le=65535, description="Redis port")
@@ -181,7 +207,11 @@ class RedisSettings(BaseSettings):
 class LoggingSettings(BaseSettings):
     """Logging configuration."""
     
-    model_config = ConfigDict(env_prefix="LOG_")
+    if PYDANTIC_V2:
+        model_config = ConfigDict(env_prefix="LOG_")  # type: ignore[misc]
+    else:
+        class Config:
+            env_prefix = "LOG_"
     
     level: LogLevel = Field(default=LogLevel.INFO, description="Logging level")
     format: str = Field(
@@ -208,7 +238,11 @@ class LoggingSettings(BaseSettings):
 class MonitoringSettings(BaseSettings):
     """Monitoring and metrics configuration."""
     
-    model_config = ConfigDict(env_prefix="MONITORING_")
+    if PYDANTIC_V2:
+        model_config = ConfigDict(env_prefix="MONITORING_")  # type: ignore[misc]
+    else:
+        class Config:
+            env_prefix = "MONITORING_"
     
     enabled: bool = Field(default=True, description="Enable monitoring")
     
@@ -226,7 +260,11 @@ class MonitoringSettings(BaseSettings):
 class SecuritySettings(BaseSettings):
     """Security configuration."""
     
-    model_config = ConfigDict(env_prefix="SECURITY_")
+    if PYDANTIC_V2:
+        model_config = ConfigDict(env_prefix="SECURITY_")  # type: ignore[misc]
+    else:
+        class Config:
+            env_prefix = "SECURITY_"
     
     # API authentication (for future implementation)
     require_api_key: bool = Field(default=False, description="Require API key authentication")
@@ -241,12 +279,19 @@ class SecuritySettings(BaseSettings):
 class JouleTraceConfig(BaseSettings):
     """Main JouleTrace configuration."""
     
-    model_config = ConfigDict(
-        env_prefix="JOULETRACE_",
-        env_file=".env",
-        env_file_encoding="utf-8",
-        case_sensitive=False
-    )
+    if PYDANTIC_V2:
+        model_config = ConfigDict(  # type: ignore[misc]
+            env_prefix="JOULETRACE_",
+            env_file=".env",
+            env_file_encoding="utf-8",
+            case_sensitive=False
+        )
+    else:
+        class Config:
+            env_prefix = "JOULETRACE_"
+            env_file = ".env"
+            env_file_encoding = "utf-8"
+            case_sensitive = False
     
     # Environment
     environment: Environment = Field(

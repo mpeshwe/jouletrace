@@ -1,0 +1,12 @@
+{
+  "socket_id": 0,
+  "idle_power_watts": 53.806918720491154,
+  "mean_power_watts": 53.79096439891212,
+  "stddev_watts": 0.0901933448147509,
+  "cv_percent": 0.16767378280463588,
+  "measurements": 29,
+  "duration_seconds": 30.017189264297485,
+  "timestamp": "2025-10-06T20:00:55.840816",
+  "valid_until_days": 7,
+  "notes": "Recalibrate if thermal baseline shifts >5\u00b0C or after 7 days"
+}

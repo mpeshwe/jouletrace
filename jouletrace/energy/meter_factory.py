@@ -13,7 +13,7 @@ from .interfaces import (
     EnergyMeterNotAvailableError,
     energy_meter_registry
 )
-from .perf_meter import PerfEnergyMeter
+from .pcm_socket_meter import PCMSocketMeter
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,8 @@ class EnergyMeterFactory:
             'architecture': platform.machine(),
             'cpu_vendor': self._detect_cpu_vendor(),
             'rapl_available': self._check_rapl_support(),
-            'perf_available': self._check_perf_availability(),
+            # Perf is deprecated in favor of per-socket RAPL path for Socket 0
+            'perf_available': False,
             'permissions': self._check_energy_permissions(),
             'kernel_version': platform.release()
         }
@@ -145,15 +146,11 @@ class EnergyMeterFactory:
         # RAPL support check
         if not system_info['rapl_available']:
             issues.append("RAPL energy monitoring not available (requires Intel/AMD processor with RAPL support)")
-        
-        # Perf availability check
-        if not system_info['perf_available']:
-            issues.append("Perf command not available (install linux-tools package)")
-        
-        # Permission checks
+
+        # Permission checks: require readable RAPL sysfs, ignore perf
         permissions = system_info['permissions']
-        if not permissions['perf_events'] and not permissions['sudo_available']:
-            issues.append("Insufficient permissions for perf events (need sudo or perf_event_paranoid=0)")
+        if not permissions['rapl_sysfs']:
+            issues.append("Insufficient permissions to read RAPL sysfs energy counters")
         
         return len(issues) == 0, issues
     
@@ -193,39 +190,18 @@ class EnergyMeterFactory:
         """Create a specific type of energy meter."""
         logger.info(f"Creating specific energy meter: {meter_type.value}")
         
-        if meter_type == EnergyMeterType.PERF:
-            return self._create_perf_meter(**kwargs)
+        if meter_type == EnergyMeterType.PCM:
+            return self._create_pcm_meter(**kwargs)
         else:
             raise EnergyMeterNotAvailableError(f"Unsupported meter type: {meter_type.value}")
     
-    def _create_perf_meter(self, **kwargs) -> PerfEnergyMeter:
-        """Create and configure a perf energy meter."""
-        system_info = self._detect_system_capabilities()
-        permissions = system_info['permissions']
-        
-        # Determine if sudo is needed
-        use_sudo = not permissions['perf_events'] and permissions['sudo_available']
-        
-        # Override with user preference if provided
-        if 'use_sudo' in kwargs:
-            use_sudo = kwargs['use_sudo']
-        
-        # Create meter with optimal configuration
-        meter_config = {
-            'use_sudo': use_sudo,
-            'perf_timeout': kwargs.get('perf_timeout', 60),
-            **{k: v for k, v in kwargs.items() if k not in ['use_sudo', 'perf_timeout']}
-        }
-        
-        logger.info(f"Creating perf meter with config: {meter_config}")
-        meter = PerfEnergyMeter(**meter_config)
-        
-        # Validate meter works
+    def _create_pcm_meter(self, **kwargs) -> PCMSocketMeter:
+        """Create and configure a per-socket RAPL meter (PCM-style)."""
+        meter = PCMSocketMeter(**kwargs)
         setup_ok, setup_error = meter.validate_setup()
         if not setup_ok:
-            raise EnergyMeterNotAvailableError(f"Perf meter setup failed: {setup_error}")
-        
-        logger.info("Perf energy meter created and validated successfully")
+            raise EnergyMeterNotAvailableError(setup_error)
+        logger.info("PCM socket meter created and validated successfully")
         return meter
     
     def _auto_select_meter(self, **kwargs) -> EnergyMeter:
@@ -234,10 +210,10 @@ class EnergyMeterFactory:
         
         system_info = self._detect_system_capabilities()
         
-        # For now, we only have perf meter, but this provides framework for future meters
-        if system_info['rapl_available'] and system_info['perf_available']:
-            logger.info("RAPL + perf available, selecting perf meter")
-            return self._create_perf_meter(**kwargs)
+        # Prefer per-socket RAPL meter for Socket 0 architecture
+        if system_info['rapl_available'] and system_info['permissions'].get('rapl_sysfs', False):
+            logger.info("RAPL sysfs available, selecting PCM socket meter")
+            return self._create_pcm_meter(**kwargs)
         
         # Future: Could add other meter types here (turbostat, Intel Power Gadget, etc.)
         
@@ -254,8 +230,8 @@ class EnergyMeterFactory:
             'system_capabilities': system_info,
             'energy_measurement_ready': environment_ok,
             'validation_issues': issues,
-            'recommended_meter': EnergyMeterType.PERF.value if environment_ok else None,
-            'available_meter_types': [EnergyMeterType.PERF.value] if environment_ok else []
+            'recommended_meter': EnergyMeterType.PCM.value if environment_ok else None,
+            'available_meter_types': [EnergyMeterType.PCM.value] if environment_ok else []
         }
     
     def diagnose_energy_measurement_issues(self) -> Dict[str, Any]:

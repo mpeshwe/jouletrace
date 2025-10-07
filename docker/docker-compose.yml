@@ -1,7 +1,7 @@
 # jouletrace/docker/docker-compose.yml
-# Production-ready Docker Compose configuration for JouleTrace
+# Socket 0 Isolation Architecture - Production Configuration
 
-# Docker Compose configuration for JouleTrace deployment
+version: '3.8'
 
 services:
   # Redis - Message broker and result backend
@@ -21,8 +21,10 @@ services:
     restart: unless-stopped
     networks:
       - jouletrace-network
+    # Bind to Socket 1 CPUs (infrastructure socket)
+    cpuset: "1,3,5,7,9,11,13,15,17,19,21,23"
 
-  # FastAPI Application
+  # FastAPI Application Server
   api:
     build:
       context: ..
@@ -32,47 +34,34 @@ services:
       - "8000:8000"
     volumes:
       - ../jouletrace:/app/jouletrace:ro
+      - ../config:/app/config:ro  # Mount calibration config
+      - /sys:/sys:ro  # Allow API to read RAPL sysfs for health checks
       - logs:/var/log/jouletrace
-    privileged: true
     environment:
       # Environment
       - JOULETRACE_ENVIRONMENT=production
       - JOULETRACE_DEBUG=false
-      # Timeouts
-      - ENERGY_DEFAULT_TIMEOUT=120
-      - ENERGY_DEFAULT_MEMORY_LIMIT=8192
-      - ENERGY_PERF_TIMEOUT=120
-      - CELERY_TASK_SOFT_TIME_LIMIT=1800
-      - CELERY_TASK_TIME_LIMIT=2400
       
       # Redis connection
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-
-      # Celery configuration
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - CELERY_TASK_PROTOCOL=pickle
-
-      # API settings - MULTIPLE WORKERS for parallel request handling
+      
+      # API settings - Multiple workers for parallel requests
       - API_HOST=0.0.0.0
       - API_PORT=8000
       - API_WORKERS=4
       
-      # Energy measurement settings
-      - ENERGY_USE_SUDO=true
-      - ENERGY_MEASUREMENT_CORE=0
-      - ENERGY_ISOLATE_PROCESSES=true
-      
       # Logging
       - LOG_LEVEL=INFO
       - LOG_TO_FILE=true
-      - LOG_JSON_LOGGING=true
+      - LOG_JSON_LOGGING=false
     depends_on:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/ping').raise_for_status()"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ping"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -80,238 +69,108 @@ services:
     restart: unless-stopped
     networks:
       - jouletrace-network
-    # Note: API server does NOT need privileged mode or CPU pinning
-    # It only queues tasks, doesn't do energy measurement
+    # API on Socket 1 (infrastructure socket)
+    cpuset: "1,3,5,7"
+    user: "0:0"  # Run as root so API can read RAPL sysfs for health
+    privileged: true  # Allow full access to /sys RAPL if restricted by LSM
 
-  # Celery Worker 1 - Pinned to Core 0
-  worker-0:
+  # Celery Worker 1 - Socket 0 Measurements (Primary)
+  # Runs on Socket 1, delegates to Socket 0 via SocketExecutor
+  worker-socket0-1:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    container_name: jouletrace-worker-0
-    command: celery -A jouletrace.api.tasks worker --loglevel=info --concurrency=1 --max-tasks-per-child=50 --hostname=worker-0@%h
+    container_name: jouletrace-worker-socket0-1
+    command: >
+      celery -A jouletrace.api.tasks worker 
+      --loglevel=info 
+      --concurrency=1 
+      --max-tasks-per-child=50 
+      --queues=socket0_measurements
+      --hostname=socket0-worker-1@%h
     volumes:
       - ../jouletrace:/app/jouletrace:ro
+      - ../config:/app/config:ro  # Mount calibration for worker
       - logs:/var/log/jouletrace
+      - /sys:/sys:ro  # Read-only access to sysfs for isolation checks
     environment:
       # Environment
       - JOULETRACE_ENVIRONMENT=production
       - JOULETRACE_DEBUG=false
-      # Timeouts
-      - ENERGY_DEFAULT_TIMEOUT=120
-      - ENERGY_DEFAULT_MEMORY_LIMIT=8192
-      - ENERGY_PERF_TIMEOUT=120
-      - CELERY_TASK_SOFT_TIME_LIMIT=1800
-      - CELERY_TASK_TIME_LIMIT=2400
       
-      # Redis connection
+      # Redis/Celery
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      
-      # Celery configuration
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - CELERY_WORKER_CONCURRENCY=1
       - CELERY_WORKER_PREFETCH_MULTIPLIER=1
+      - CELERY_TASK_SOFT_TIME_LIMIT=1800
+      - CELERY_TASK_TIME_LIMIT=2400
       
-      # Energy measurement settings - CORE 0
-      - ENERGY_USE_SUDO=true
-      - ENERGY_MEASUREMENT_CORE=0
-      - ENERGY_ISOLATE_PROCESSES=true
-      - ENERGY_DEFAULT_TRIALS=5
-      - ENERGY_DEFAULT_WARMUP=2
+      # Energy measurement
+      - ENERGY_USE_SUDO=false  # Already root in container
+      - ENERGY_MEASUREMENT_CORE=4  # Socket 0 CPU
       
       # Logging
       - LOG_LEVEL=INFO
       - LOG_TO_FILE=true
-      - LOG_JSON_LOGGING=true
+      - LOG_JSON_LOGGING=false
     depends_on:
       redis:
         condition: service_healthy
     restart: unless-stopped
     networks:
       - jouletrace-network
-    # Privileged mode needed for perf energy measurement
-    privileged: true
-    # CPU pinning to core 0 for consistent energy measurements
-    cpuset: "0"
+    # Worker runs on Socket 1, uses SocketExecutor to delegate to Socket 0
+    cpuset: "1,3,4"  # include measurement core 4
+    privileged: true  # Need access to MSR, RAPL counters
+    user: "0:0"      # Run worker as root to access /dev/cpu/*/msr
 
-  # Celery Worker 2 - Pinned to Core 1
-  worker-1:
+  # Celery Worker 2 - Socket 0 Measurements (Secondary)
+  worker-socket0-2:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    container_name: jouletrace-worker-1
-    command: celery -A jouletrace.api.tasks worker --loglevel=info --concurrency=1 --max-tasks-per-child=50 --hostname=worker-1@%h
+    container_name: jouletrace-worker-socket0-2
+    command: >
+      celery -A jouletrace.api.tasks worker 
+      --loglevel=info 
+      --concurrency=1 
+      --max-tasks-per-child=50 
+      --queues=socket0_measurements
+      --hostname=socket0-worker-2@%h
     volumes:
       - ../jouletrace:/app/jouletrace:ro
+      - ../config:/app/config:ro
       - logs:/var/log/jouletrace
+      - /sys:/sys:ro
     environment:
-      # Environment
       - JOULETRACE_ENVIRONMENT=production
       - JOULETRACE_DEBUG=false
-      # Timeouts
-      - ENERGY_DEFAULT_TIMEOUT=120
-      - ENERGY_DEFAULT_MEMORY_LIMIT=8192
-      - ENERGY_PERF_TIMEOUT=120
-      - CELERY_TASK_SOFT_TIME_LIMIT=1800
-      - CELERY_TASK_TIME_LIMIT=2400
-      
-      # Redis connection
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      
-      # Celery configuration
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - CELERY_WORKER_CONCURRENCY=1
       - CELERY_WORKER_PREFETCH_MULTIPLIER=1
-      
-      # Energy measurement settings - CORE 1
-      - ENERGY_USE_SUDO=true
-      - ENERGY_MEASUREMENT_CORE=1
-      - ENERGY_ISOLATE_PROCESSES=true
-      - ENERGY_DEFAULT_TRIALS=5
-      - ENERGY_DEFAULT_WARMUP=2
-      
-      # Logging
+      - CELERY_TASK_SOFT_TIME_LIMIT=1800
+      - CELERY_TASK_TIME_LIMIT=2400
+      - ENERGY_USE_SUDO=false
+      - ENERGY_MEASUREMENT_CORE=4
       - LOG_LEVEL=INFO
       - LOG_TO_FILE=true
-      - LOG_JSON_LOGGING=true
     depends_on:
       redis:
         condition: service_healthy
     restart: unless-stopped
     networks:
       - jouletrace-network
-    # Privileged mode needed for perf energy measurement
+    cpuset: "5,7,4"  # include measurement core 4
     privileged: true
-    # CPU pinning to core 1 for consistent energy measurements
-    cpuset: "1"
+    user: "0:0"
 
-  # Celery Worker 3 - Pinned to Core 2
-  worker-2:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-    container_name: jouletrace-worker-2
-    command: celery -A jouletrace.api.tasks worker --loglevel=info --concurrency=1 --max-tasks-per-child=50 --hostname=worker-2@%h
-    volumes:
-      - ../jouletrace:/app/jouletrace:ro
-      - logs:/var/log/jouletrace
-    environment:
-      # Environment
-      - JOULETRACE_ENVIRONMENT=production
-      - JOULETRACE_DEBUG=false
-      # Timeouts
-      - ENERGY_DEFAULT_TIMEOUT=120
-      - ENERGY_DEFAULT_MEMORY_LIMIT=8192
-      - ENERGY_PERF_TIMEOUT=120
-      - CELERY_TASK_SOFT_TIME_LIMIT=1800
-      - CELERY_TASK_TIME_LIMIT=2400
-      
-      # Redis connection
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      
-      # Celery configuration
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - CELERY_WORKER_CONCURRENCY=1
-      - CELERY_WORKER_PREFETCH_MULTIPLIER=1
-      
-      # Energy measurement settings - CORE 2
-      - ENERGY_USE_SUDO=true
-      - ENERGY_MEASUREMENT_CORE=2
-      - ENERGY_ISOLATE_PROCESSES=true
-      - ENERGY_DEFAULT_TRIALS=5
-      - ENERGY_DEFAULT_WARMUP=2
-      
-      # Logging
-      - LOG_LEVEL=INFO
-      - LOG_TO_FILE=true
-      - LOG_JSON_LOGGING=true
-    depends_on:
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - jouletrace-network
-    # Privileged mode needed for perf energy measurement
-    privileged: true
-    # CPU pinning to core 2 for consistent energy measurements
-    cpuset: "2"
-
-  # Celery Worker 4 - Pinned to Core 3
-  worker-3:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-    container_name: jouletrace-worker-3
-    command: celery -A jouletrace.api.tasks worker --loglevel=info --concurrency=1 --max-tasks-per-child=50 --hostname=worker-3@%h
-    volumes:
-      - ../jouletrace:/app/jouletrace:ro
-      - logs:/var/log/jouletrace
-    environment:
-      # Environment
-      - JOULETRACE_ENVIRONMENT=production
-      - JOULETRACE_DEBUG=false
-      # Timeouts
-      - ENERGY_PERF_TIMEOUT=120
-      - CELERY_TASK_SOFT_TIME_LIMIT=1800
-      - CELERY_TASK_TIME_LIMIT=2400
-      
-      # Redis connection
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      
-      # Celery configuration
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - CELERY_WORKER_CONCURRENCY=1
-      - CELERY_WORKER_PREFETCH_MULTIPLIER=1
-      
-      # Energy measurement settings - CORE 3
-      - ENERGY_USE_SUDO=true
-      - ENERGY_MEASUREMENT_CORE=3
-      - ENERGY_ISOLATE_PROCESSES=true
-      - ENERGY_DEFAULT_TRIALS=5
-      - ENERGY_DEFAULT_WARMUP=2
-      
-      # Logging
-      - LOG_LEVEL=INFO
-      - LOG_TO_FILE=true
-      - LOG_JSON_LOGGING=true
-    depends_on:
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - jouletrace-network
-    # Privileged mode needed for perf energy measurement
-    privileged: true
-    # CPU pinning to core 3 for consistent energy measurements
-    cpuset: "3"
-
-  # Celery Beat (optional - for scheduled tasks)
-  # beat:
-  #   build:
-  #     context: ..
-  #     dockerfile: docker/Dockerfile
-  #   container_name: jouletrace-beat
-  #   command: celery -A jouletrace.api.tasks beat --loglevel=info
-  #   volumes:
-  #     - ../jouletrace:/app/jouletrace:ro
-  #   environment:
-  #     - CELERY_BROKER_URL=redis://redis:6379/0
-  #   depends_on:
-  #     redis:
-  #       condition: service_healthy
-  #   restart: unless-stopped
-  #   networks:
-  #     - jouletrace-network
-
-  # Flower - Celery Monitoring (optional)
+  # Flower - Celery Monitoring Dashboard
   flower:
     build:
       context: ..
@@ -329,6 +188,7 @@ services:
     restart: unless-stopped
     networks:
       - jouletrace-network
+    cpuset: "1,3"
 
 volumes:
   redis_data:
@@ -340,88 +200,94 @@ networks:
   jouletrace-network:
     driver: bridge
 
-# Production deployment notes:
-# 
+# ============================================================================
+# Socket 0 Isolation Architecture - Deployment Guide
+# ============================================================================
+#
 # ARCHITECTURE OVERVIEW:
-# =====================
-# - API Server: 4 workers (handles parallel HTTP requests from training pipeline)
-# - Celery Workers: 4 workers, each pinned to dedicated CPU core (processes energy measurements)
-# - Redis: Message broker and result backend
-# - Flower: Optional Celery monitoring dashboard
+# ---------------------
+# Socket 0 (21 CPUs): ISOLATED for measurements only
+#   - CPUs: 0,2,4,6,8,10,12,14,18,22,24,26,28,30,34,36,38,40,42,44,46
+#   - Frequency: Locked at 2.6 GHz
+#   - Turbo: Disabled
+#   - Processes: 0 (fully isolated)
+#   - Measurements: Serial execution via SocketExecutor + Redis lock
 #
-# This setup allows:
-# - Parallel request handling: Submit 100+ measurement tasks instantly
-# - Fair energy measurement: Each worker isolated on dedicated core
-# - Scalable throughput: Adjust number of workers based on CPU cores available
+# Socket 1 (23 CPUs): Infrastructure (API, Workers, Redis)
+#   - API: 4 workers handling HTTP requests
+#   - Celery: 2 workers processing measurement tasks
+#   - Redis: Message broker
+#   - All services pinned to Socket 1 CPUs
 #
-# 1. Build and start services:
+# MEASUREMENT FLOW:
+# ----------------
+# 1. Client → API (Socket 1) → Queue task
+# 2. Worker (Socket 1) picks up task
+# 3. Worker acquires Redis lock for Socket 0
+# 4. Worker uses SocketExecutor to spawn subprocess on Socket 0 CPU 4
+# 5. Subprocess executes code, PCM measures socket energy
+# 6. Worker releases lock, returns results
+#
+# WHY ONLY 2 WORKERS?
+# ------------------
+# - Socket 0 is serial (Redis lock ensures one measurement at a time)
+# - More workers = more parallelism for validation/setup, but measurement is still serial
+# - 2 workers provide redundancy + can validate next tasks while one measures
+#
+# PREREQUISITES:
+# -------------
+# 1. Host system must have Socket 0 isolation configured (Part 1)
+# 2. Socket 0 must be calibrated:
+#    sudo python3 scripts/calibrate_socket0.py
+# 3. Calibration file must exist: config/socket0_calibration.json
+#
+# DEPLOYMENT:
+# ----------
+# 1. Build and start:
+#    cd jouletrace/docker
 #    docker-compose up -d --build
 #
-# 2. View logs:
-#    docker-compose logs -f api
-#    docker-compose logs -f worker-0 worker-1 worker-2 worker-3
+# 2. Verify services:
+#    docker-compose ps
+#    curl http://localhost:8000/api/v1/socket0/status
 #
-# 3. Scale workers based on available CPU cores:
-#    # If you have 8 cores, you can add more workers:
-#    # Copy worker-3 section, rename to worker-4, worker-5, etc.
-#    # Update ENERGY_MEASUREMENT_CORE and cpuset accordingly
-#    # Rule: 1 worker per physical core for fair energy measurement
+# 3. Check worker logs:
+#    docker-compose logs -f worker-socket0-1
 #
-# 4. Stop services:
-#    docker-compose down
+# 4. Monitor with Flower:
+#    http://localhost:5555
 #
-# 5. Stop and remove volumes:
-#    docker-compose down -v
+# 5. Submit test measurement:
+#    curl -X POST http://localhost:8000/api/v1/measure-socket0 \
+#      -H "Content-Type: application/json" \
+#      -d '{
+#        "candidate_code": "def solve(n): return n * 2",
+#        "test_cases": [
+#          {"inputs": 5, "expected_output": 10, "test_id": "t1"}
+#        ],
+#        "function_name": "solve",
+#        "energy_measurement_trials": 3
+#      }'
 #
-# 6. Access services:
-#    - API: http://localhost:8000
-#    - API Docs: http://localhost:8000/docs
-#    - Flower (Celery monitoring): http://localhost:5555
-#    - Redis: localhost:6379
+# SCALING:
+# -------
+# - API workers: Scale up for more HTTP throughput
+# - Celery workers: 2-4 sufficient (Socket 0 is bottleneck)
+# - Don't add workers to Socket 0 - breaks isolation!
 #
-# 7. Health checks:
-#    curl http://localhost:8000/api/v1/health
+# TROUBLESHOOTING:
+# ---------------
+# - "Socket 0 not calibrated": Run calibration script on host
+# - "Lock timeout": Redis not accessible or another measurement stuck
+# - "Permission denied": Container needs privileged mode for RAPL
+# - "Isolated CPUs not found": Host system Part 1 not configured
 #
-# 8. GRPO Training Pipeline Integration:
-#    # Your training loop can submit batches in parallel
-#    task_ids = []
-#    for candidate in batch_of_100_solutions:
-#        response = requests.post("http://localhost:8000/api/v1/measure", json={
-#            "candidate_code": candidate.code,
-#            "test_cases": test_cases,
-#            "candidate_id": candidate.id
-#        })
-#        task_ids.append(response.json()["task_id"])
-#    
-#    # All 100 tasks queued instantly (4 API workers handle parallel requests)
-#    # 4 Celery workers process them with proper CPU isolation (25 each in parallel)
-#
-# 9. System requirements:
-#    - Docker 20.10+
-#    - Docker Compose 1.29+
-#    - Host system with RAPL support (Intel/AMD x86_64)
-#    - At least 4 CPU cores (1 per Celery worker recommended)
-#    - Privileged mode enabled (for perf energy measurement)
-#
-# 10. Performance tuning:
-#     - More API workers: Increase API_WORKERS for higher request throughput
-#     - More Celery workers: Add workers up to number of physical cores
-#     - Each Celery worker needs dedicated core for fair energy measurement
-#     - Don't exceed physical core count (hyperthreading not recommended)
-#
-# 11. Environment customization:
-#     Create a .env file with your settings:
-#       JOULETRACE_ENVIRONMENT=production
-#       API_PORT=8000
-#       API_WORKERS=4
-#       LOG_LEVEL=INFO
-#
-# 12. Production considerations:
-#      - Use Docker secrets for sensitive data
-#      - Configure proper logging aggregation
-#      - Set up monitoring and alerting
-#      - Use external Redis in production (not containerized)
-#      - Configure proper backup for Redis data
-#      - Use reverse proxy (nginx/traefik) for HTTPS
-#      - Implement proper resource limits
-#      - Consider using Kubernetes for orchestration at scale
+# PRODUCTION NOTES:
+# ----------------
+# - Use external Redis (not container) for resilience
+# - Mount /sys read-only for security
+# - Consider Kubernetes for multi-node orchestration
+# - Monitor calibration age (recalibrate weekly)
+# - Set resource limits per service
+# - Use secrets management for sensitive config
+# - Enable HTTPS via reverse proxy (nginx/traefik)
